@@ -1,0 +1,68 @@
+{
+  "data": {
+    "root": "D:/桌面/课题/数据/FloodPlanet/FloodPlanet1",
+    "label_size": 256,
+    "use_geo_metadata": true,
+    "val_fraction": 0.15,
+    "test_fraction": 0.15,
+    "split_seed": 42,
+    "num_workers": 2
+  },
+  "sensors": {
+    "s1": {
+      "bands": ["VV", "VH"],
+      "mean": [-12.113, -18.673],
+      "std": [8.314, 8.017],
+      "waves": [3.5, 4.0],
+      "gsd": 10.0
+    },
+    "s2": {
+      "bands": ["B2", "B3", "B4", "B5", "B6", "B7", "B8", "B8A", "B11", "B12"],
+      "mean": [1105.0, 1355.0, 1552.0, 1887.0, 2422.0, 2630.0, 2743.0, 2785.0, 2388.0, 1835.0],
+      "std": [1809.0, 1757.0, 1888.0, 1870.0, 1732.0, 1697.0, 1742.0, 1648.0, 1470.0, 1379.0],
+      "waves": [0.493, 0.56, 0.665, 0.704, 0.74, 0.783, 0.842, 0.865, 1.61, 2.19],
+      "gsd": 10.0
+    },
+    "ps": {
+      "bands": ["blue", "green", "red", "nir"],
+      "mean": [42.9211, 55.7281, 51.7083, 87.2592],
+      "std": [43.5598, 51.9537, 49.9885, 51.3966],
+      "waves": [0.49, 0.56, 0.665, 0.865],
+      "gsd": 3.0
+    }
+  },
+  "model": {
+    "clay_checkpoint": "checkpoints/clay-v1.5.ckpt",
+    "clay_model_size": "large",
+    "freeze_clay": true,
+    "patch_size": 8,
+    "feature_channels": 256,
+    "feature_size": 16,
+    "fusion_heads": 8,
+    "max_random_drop": 2,
+    "drop_probability": 1.0,
+    "output_size": 256
+  },
+  "loss": {
+    "temperature": 2.0,
+    "weights": {
+      "teacher_seg": 1.0,
+      "student_seg": 1.0,
+      "boundary_supervision": 0.25,
+      "shared_kd": 0.5,
+      "boundary_kd": 0.25,
+      "prediction_kd": 0.5,
+      "reconstruction": 0.5
+    }
+  },
+  "training": {
+    "epochs": 50,
+    "batch_size": 1,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.0001,
+    "gradient_clip": 1.0,
+    "amp": true,
+    "seed": 42,
+    "output_dir": "runs/default"
+  }
+}

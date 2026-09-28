@@ -1,0 +1,13 @@
+checkpoints/
+runs/
+predictions/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.idea/
+*.egg-info/
+floodclay/runs/
+.venv/
+.env
+.env.*
+

@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flood-multimodal-clay"
+version = "0.1.0"
+description = "Teacher-student flood segmentation with missing S1/S2/PS modalities"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26", "rasterio>=1.3", "torch>=2.4"]
+
+[tool.setuptools.packages.find]
+include = ["floodclay*"]
+
