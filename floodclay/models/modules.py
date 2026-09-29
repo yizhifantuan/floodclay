@@ -222,7 +222,7 @@ class MissingModalityGenerator(nn.Module):
             # 变成[B, M, C, H, W]
         return torch.stack(completed, dim=1), torch.stack(generated, dim=1)
 
-
+# 对特征进行融合
 class CrossModalAttentionFusion(nn.Module):
     """Pixel-wise attention across the three sensor tokens plus dynamic gating."""
 
@@ -233,54 +233,83 @@ class CrossModalAttentionFusion(nn.Module):
         self.modalities = modalities
         self.channels = channels
         self.state_embeddings = nn.Parameter(torch.randn(modalities, 2, channels) * 0.02)
+        # 让同一像素位置的各模态特征互相交换信息
         self.attention = nn.MultiheadAttention(channels, heads, batch_first=True)
         self.norm = nn.LayerNorm(channels)
+        # 把一个模态的 C 维特征变成 1 个分数，后面用这个分数决定该模态的融合权重
         self.gate = nn.Sequential(nn.Linear(channels, channels // 2), nn.GELU(), nn.Linear(channels // 2, 1))
+        # 融合
         self.output = ConvBlock(channels, channels)
 
     def forward(
         self, features: torch.Tensor, original_availability: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         batch, modalities, channels, height, width = features.shape
+        # 先把是否存在转换为整数
+        # 再把形状从 [B, M] 换成 [M, B]。
+        # transpose交换维数
         state = original_availability.long().transpose(0, 1)
+        # 逐个模态取出对应的“存在／缺失”标记。
+        # 结果先是 [B, M, C]，再变成 [B, M, C, 1, 1]
         embeddings = torch.stack(
             [self.state_embeddings[m, state[m]] for m in range(modalities)], dim=1
         ).view(batch, modalities, channels, 1, 1)
+        # 给特征加上存在状态标记。此时形状仍是 [B, M, C, H, W]
         conditioned = features + embeddings
+        # 把形状改成 [B×H×W, M, C]。可以理解为：把每个像素当成一个小组，每组有 M 个模态特征
         tokens = conditioned.permute(0, 3, 4, 1, 2).reshape(-1, modalities, channels)
+        # 对每个像素小组做模态间的自注意力
         attended, _ = self.attention(tokens, tokens, tokens, need_weights=False)
+        # 把注意力结果加回原特征，再归一化。这一步保留了原来的信息，同时加入了其他模态的信息
         tokens = self.norm(tokens + attended)
+        # gate 给每个模态算一个分数，形状从 [B×H×W, M, 1] 经 squeeze 变成 [B×H×W, M]
+        # softmax(dim=1) 把同一像素的 M 个分数变成权重，这些权重相加等于 1。
         weights = torch.softmax(self.gate(tokens).squeeze(-1), dim=1)
+        # 按权重对模态特征求和
         fused = (tokens * weights.unsqueeze(-1)).sum(dim=1)
+        # 把像素重新排回图像，得到 [B, C, H, W]
         fused = fused.reshape(batch, height, width, channels).permute(0, 3, 1, 2)
+        # 也把权重排回图像，得到 [B, M, H, W]。它能显示每个像素对各模态分配了多少权重。
         weight_map = weights.reshape(batch, height, width, modalities).permute(0, 3, 1, 2)
         return self.output(fused), weight_map
 
-
+# 分割解码器
 class SegmentationDecoder(nn.Module):
     def __init__(self, channels: int, output_size: int) -> None:
         super().__init__()
         self.output_size = output_size
+        # 规定各阶段的通道数。例如 channels=128，就得到：[128, 64, 32, 32]
         widths = [channels, max(channels // 2, 32), max(channels // 4, 32), 32]
+        # 也就是逐步把通道从 128 减到 32
         self.stages = nn.ModuleList(
             [ConvBlock(widths[index], widths[index + 1]) for index in range(len(widths) - 1)]
         )
+        # 建立两个独立的输出层。每个都是 1×1 卷积，把 32 通道变成 1 通道
         self.segmentation_head = nn.Conv2d(widths[-1], 1, 1)
         self.boundary_head = nn.Conv2d(widths[-1], 1, 1)
 
     def forward(self, feature: torch.Tensor) -> dict[str, torch.Tensor]:
         x = feature
+        # pyramid 先保存原始特征
         pyramid = [x]
+        # 对上采样的各个阶段进行下面的操作
         for stage in self.stages:
+            # interpolate把特征图的高和宽各放大 2 倍
             x = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
+            # 用当前的 ConvBlock 处理放大后的特征，并改变通道数
             x = stage(x)
+            # 保存这一阶段的结果
             pyramid.append(x)
+        # 是否等于目标的尺寸
         if x.shape[-2:] != (self.output_size, self.output_size):
             x = F.interpolate(
                 x, size=(self.output_size, self.output_size), mode="bilinear", align_corners=False
             )
+        #
         return {
+            # 洪水分割的原始预测分数
             "logits": self.segmentation_head(x),
+            # 边界的原始预测分数
             "boundary_logits": self.boundary_head(x),
             "pyramid": pyramid,
         }
