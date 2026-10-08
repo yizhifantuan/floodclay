@@ -1,3 +1,4 @@
+# 把模型预测的洪水区域和真实洪水区域进行比较，然后计算 IoU、F1、Precision、Recall、Accuracy。
 from __future__ import annotations
 
 import torch

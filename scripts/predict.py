@@ -41,13 +41,9 @@ def main() -> None:
     parser.add_argument("--threshold", type=float, default=0.5)
     args = parser.parse_args()
 
-    config = load_config(args.config)
-    if args.data_root:
-        config["data"]["root"] = args.data_root
-    if args.clay_checkpoint:
-        config["model"]["clay_checkpoint"] = args.clay_checkpoint
-    elif not Path(config["model"]["clay_checkpoint"]).is_absolute():
-        config["model"]["clay_checkpoint"] = str(PROJECT / config["model"]["clay_checkpoint"])
+    config = load_config(
+        args.config, data_root=args.data_root, clay_checkpoint=args.clay_checkpoint
+    )
 
     matching = [r for r in scan_floodplanet(config["data"]["root"]) if r.sample_id == args.sample_id]
     if not matching:
@@ -57,7 +53,7 @@ def main() -> None:
         matching,
         config["sensors"],
         label_size=config["data"]["label_size"],
-        use_geo_metadata=config["data"].get("use_geo_metadata", True),
+        use_geo_metadata=config["data"]["use_geo_metadata"],
     )
     batch = next(iter(DataLoader(dataset, batch_size=1)))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

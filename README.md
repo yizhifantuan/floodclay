@@ -69,11 +69,12 @@ floodclay/
   models/clay_encoder.py 官方 Clay 空间 token 适配器
   models/modules.py      掩码、尺度对齐、共享表示、生成、注意力、解码器
   models/network.py      教师—学生完整组装
+  engine.py              共用的训练/验证循环、设备移动和检查点读写
+  config.py              配置读取、命令行路径覆盖和统一路径解析
   losses.py              分割、边界、三层蒸馏和特征重建损失
   metrics.py             IoU、F1、Precision、Recall、Accuracy
 scripts/
   audit_dataset.py       训练前数据审计
-  download_clay.py       下载 Clay v1.5 权重
   train.py               训练
   evaluate.py            7 种固定缺失情形 + 数据真实缺失评估
   predict.py             单瓦片推理并写回带地理信息的 GeoTIFF
@@ -94,15 +95,15 @@ python -c "from claymodel.model import Encoder; print(Encoder)"
 
 运行测试或在 IDE 中编辑时，使用安装依赖的同一个 Python 解释器。
 
+配置以 `configs/default.json` 为完整模板，必需字段直接读取。命令行只覆盖显式传入的参数；数据、Clay 权重和训练输出的相对路径统一相对于项目根目录解析。损失权重全部显式配置，关闭某项损失时把对应权重设为 `0`。
+
+Clay 权重统一采用官方 checkpoint 格式：`state_dict` 中的 `model.encoder.*` 参数。训练与验证循环位于 `floodclay/engine.py`，通过是否传入优化器区分；普通精度和混合精度使用同一套更新流程。
+
 官方 Clay v1.5 输入包含归一化影像、波长、GSD、时间和经纬度元数据；编码器输出 patch token。本工程直接实例化官方 `Encoder` 并只加载 checkpoint 中的 `model.encoder.*` 权重，避免为了分割任务同时实例化 Clay 预训练时使用的重建器和视觉教师。
 
-## 2. 下载 Clay 权重
+## 2. 准备 Clay 权重
 
-```powershell
-python scripts/download_clay.py
-```
-
-默认保存为 `checkpoints/clay-v1.5.ckpt`。如果已经有权重，可训练时传入：
+将官方 Clay v1.5 checkpoint 放到 `checkpoints/clay-v1.5.ckpt`，或训练时传入：
 
 ```powershell
 python scripts/train.py --clay-checkpoint D:\path\to\clay-v1.5.ckpt
@@ -170,7 +171,6 @@ predictions/BOL_1041_mask.tif
 1. 当前发布文件名不含可靠采集时间，因此 `time` 元数据置零；经纬度从 PS GeoTIFF 中心点编码。若后续获得 STAC 日期，应在 `dataset.py` 中补入 Clay 的周期时间编码。
 2. PS 是公开发布的 8-bit 逐瓦片归一化版本，和论文实验使用的原始商业影像量纲不同。结果应明确注明这一点。
 3. 模态生成发生在特征空间，不生成伪遥感影像；这更适合分割目标，也避免把视觉上合理但光谱不可信的像素当作观测。
-4. `lite` 后端的结果不能作为 Clay 复现实验结果，只用于代码和消融检查。
 
 ## 参考接口
 

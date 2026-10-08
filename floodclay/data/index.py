@@ -75,6 +75,7 @@ def scan_floodplanet(root: str | Path) -> list[SampleRecord]:
                 label=str(labels[sample_id]),
             )
         )
+    # 最后返回的是一个 list[SampleRecord] 列表
     return records
 
 # 按洪水事件划分数据集
@@ -84,7 +85,6 @@ def split_by_event(
     test_fraction: float = 0.15,
     seed: int = 42,
 ) -> dict[str, list[SampleRecord]]:
-
     # 把输入转换成列表
     records = list(records)
     # 取出所有不重复的事件名称
@@ -101,14 +101,14 @@ def split_by_event(
     n_test = max(1, round(len(events) * test_fraction))
     # 计算验证集应该包含多少个事件
     n_val = max(1, round(len(events) * val_fraction))
-    # 检查测试集和训练集是否占用了全部的数据
+    # 按事件取整后，仍必须留出训练事件。
     if n_test + n_val >= len(events):
-        n_test = n_val = 1
+        raise ValueError("Split fractions leave no training events after rounding")
     # 按数量进行分配
     test_events = set(events[:n_test])
     val_events = set(events[n_test : n_test + n_val])
     train_events = set(events[n_test + n_val :])
-
+    # 字典有三个键，每个键对应一组 SampleRecord 样本记录
     return {
         "train": [r for r in records if r.event in train_events],
         "val": [r for r in records if r.event in val_events],
@@ -126,4 +126,3 @@ def summarize(records: Iterable[SampleRecord]) -> dict[str, object]:
         "s2_missing": sum(r.s2 is None for r in records),
         "events": sorted({r.event for r in records}),
     }
-

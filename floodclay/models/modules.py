@@ -8,10 +8,7 @@ from torch import nn
 
 # 给 GroupNorm 找一个合适的分组数量
 def _groups(channels: int) -> int:
-    for groups in (32, 16, 8, 4, 2, 1):
-        if channels % groups == 0:
-            return groups
-    return 1
+    return next(groups for groups in (32, 16, 8, 4, 2, 1) if channels % groups == 0)
 
 # 一个模块
 class ConvBlock(nn.Module):
@@ -137,22 +134,13 @@ class SharedRepresentation(nn.Module):
     def forward(self, features: torch.Tensor, available: torch.Tensor) -> torch.Tensor:
         # 获取批次；模态；通道
         batch, modalities, channels, _, _ = features.shape
-        # 进行转置操作
-        # [
-        #  [1,0,1],
-        #  [1,1,0]
-        # ]
-        # 变成
-        # [
-        #  [1,1],   ← S1
-        #  [0,1],   ← S2
-        #  [1,0]    ← PS
-        # ]
-        state = available.long().transpose(0, 1)
+        # [B, M] 的可用状态直接索引每个模态的状态编码。
+        state = available.long()
         # 根据状态取 embedding；state_embeddings里面包括了每个模态的两种状态的身份编码
-        embeddings = torch.stack(
-            [self.state_embeddings[m, state[m]] for m in range(modalities)], dim=1
-        ).view(batch, modalities, channels, 1, 1)
+        modality_indices = torch.arange(modalities, device=features.device)
+        embeddings = self.state_embeddings[modality_indices, state].view(
+            batch, modalities, channels, 1, 1
+        )
         # 将特诊和身份编码相加
         conditioned = features + embeddings
         # available 变成权重
@@ -245,15 +233,14 @@ class CrossModalAttentionFusion(nn.Module):
         self, features: torch.Tensor, original_availability: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         batch, modalities, channels, height, width = features.shape
-        # 先把是否存在转换为整数
-        # 再把形状从 [B, M] 换成 [M, B]。
-        # transpose交换维数
-        state = original_availability.long().transpose(0, 1)
-        # 逐个模态取出对应的“存在／缺失”标记。
+        # 保留 [B, M] 形状，直接索引每个模态的状态编码。
+        state = original_availability.long()
+        # 取出各模态对应的“存在／缺失”标记。
         # 结果先是 [B, M, C]，再变成 [B, M, C, 1, 1]
-        embeddings = torch.stack(
-            [self.state_embeddings[m, state[m]] for m in range(modalities)], dim=1
-        ).view(batch, modalities, channels, 1, 1)
+        modality_indices = torch.arange(modalities, device=features.device)
+        embeddings = self.state_embeddings[modality_indices, state].view(
+            batch, modalities, channels, 1, 1
+        )
         # 给特征加上存在状态标记。此时形状仍是 [B, M, C, H, W]
         conditioned = features + embeddings
         # 把形状改成 [B×H×W, M, C]。可以理解为：把每个像素当成一个小组，每组有 M 个模态特征
@@ -313,4 +300,3 @@ class SegmentationDecoder(nn.Module):
             "boundary_logits": self.boundary_head(x),
             "pyramid": pyramid,
         }
-

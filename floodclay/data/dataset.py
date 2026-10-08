@@ -195,12 +195,10 @@ class FloodPlanetDataset(Dataset[dict[str, Any]]):
 
         # 对图像进行旋转强化
         if self.augment:
-            if bool(torch.rand(()) < 0.5):
-                images = {key: value.flip(-1) for key, value in images.items()}
-                target, valid = target.flip(-1), valid.flip(-1)
-            if bool(torch.rand(()) < 0.5):
-                images = {key: value.flip(-2) for key, value in images.items()}
-                target, valid = target.flip(-2), valid.flip(-2)
+            for dimension in (-1, -2):
+                if bool(torch.rand(()) < 0.5):
+                    images = {key: value.flip(dimension) for key, value in images.items()}
+                    target, valid = target.flip(dimension), valid.flip(dimension)
         # 是否所有模态都存在
         if self.use_geo_metadata:
             # 计算图像的中心位置

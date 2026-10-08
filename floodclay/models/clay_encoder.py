@@ -34,22 +34,7 @@ class ClayPatchEncoder(nn.Module):
     ) -> None:
         # 初始化父类
         super().__init__()
-        if model_size not in MODEL_SIZES:
-            raise ValueError(f"Unknown Clay size {model_size!r}; choose from {tuple(MODEL_SIZES)}")
-        # 把 checkpoint 转换成 Path 对象
-        checkpoint = Path(checkpoint).expanduser()
-        if not checkpoint.is_file():
-            raise FileNotFoundError(
-                f"Clay checkpoint not found: {checkpoint}. Run scripts/download_clay.py first."
-            )
-        try:
-            # 尝试从官方 claymodel 包中导入 Encoder
-            from claymodel.model import Encoder
-        except ImportError as exc:
-            raise ImportError(
-                "The official claymodel package is required. "
-                "Install it with: pip install git+https://github.com/Clay-foundation/model.git"
-            ) from exc
+        from claymodel.model import Encoder
         # 根据 model_size 从配置字典中找到对应参数
         size = MODEL_SIZES[model_size]
         # 记录 Clay 输出特征的维度
@@ -72,7 +57,7 @@ class ClayPatchEncoder(nn.Module):
             mlp_ratio=size["mlp_ratio"],
         )
         # 读取预训练权重
-        self._load_encoder_weights(checkpoint)
+        self._load_encoder_weights(Path(checkpoint))
         if freeze:
             # 关闭编码器所有参数的梯度计算
             # 训练时，优化器不会更新这些参数
@@ -80,36 +65,15 @@ class ClayPatchEncoder(nn.Module):
             self.encoder.eval()
     # 读取clay1.5的权重
     def _load_encoder_weights(self, checkpoint: Path) -> None:
-        # 使用 PyTorch 读取权重文件
-        # 首先把数据读取到CPU
-        # weights_only=True表示尽量只读取权重数据
+        """只读取官方 Clay checkpoint 中的 model.encoder.* 权重。"""
         payload = torch.load(checkpoint, map_location="cpu", weights_only=True)
-        # 如果 payload 里面有 "state_dict" 这个键，就取它对应的值；如果没有，就直接使用整个 payload
-        state = payload.get("state_dict", payload)
-        # 是在创建一个空字典，名字叫 selected
-        selected: dict[str, torch.Tensor] = {}
-        # 读取state的数据存储到selected中
-        for key, value in state.items():
-            # 有些通过 torch.compile 等方式保存的模型，参数名前面可能带有_orig_mod.前缀，删除
-            clean = key.removeprefix("_orig_mod.")
-            # 检查两种可能的编码器前缀model.encoder.或者encoder.
-            for prefix in ("model.encoder.", "encoder."):
-                # 检查当前参数名是不是以其中一个编码器前缀开头
-                if clean.startswith(prefix):
-                    # 去掉前缀并保存
-                    selected[clean[len(prefix) :]] = value
-                    break
-        # 检查是否找到了编码器权重
-        if not selected:
-            raise ValueError("Checkpoint contains no keys under model.encoder.*")
-        try:
-            # 把权重加载进模型
-            self.encoder.load_state_dict(selected, strict=True)
-        except RuntimeError as exc:
-            raise RuntimeError(
-                "Clay checkpoint does not match the configured model_size/patch_size. "
-                f"Configured encoder_dim={self.dim}, patch_size={self.patch_size}."
-            ) from exc
+        prefix = "model.encoder."
+        selected = {
+            key.removeprefix(prefix): value
+            for key, value in payload["state_dict"].items()
+            if key.startswith(prefix)
+        }
+        self.encoder.load_state_dict(selected, strict=True)
     # 重写 train() 方法
     # 返回的是一个 ClayPatchEncoder 类型的对象
     def train(self, mode: bool = True) -> "ClayPatchEncoder":
@@ -174,9 +138,9 @@ class SharedClayEncoder(nn.Module):
         # 创建一个 ClayPatchEncoder，保存到 backbone
         self.backbone = ClayPatchEncoder(
             checkpoint=model_config["clay_checkpoint"],
-            model_size=model_config.get("clay_model_size", "large"),
-            patch_size=model_config.get("patch_size", 8),
-            freeze=model_config.get("freeze_clay", True),
+            model_size=model_config["clay_model_size"],
+            patch_size=model_config["patch_size"],
+            freeze=model_config["freeze_clay"],
         )
         # 读取 Clay 编码器输出的特征维度，并保存下来
         self.output_dim = self.backbone.dim

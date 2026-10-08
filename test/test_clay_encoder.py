@@ -36,7 +36,7 @@ def make_smoke_checkpoint(path: Path, patch_size: int) -> None:
 
 
 def run(args: argparse.Namespace, checkpoint: Path, model_size: str) -> None:
-    config = load_config(args.config)
+    config = load_config(args.config, clay_checkpoint=checkpoint)
     records = scan_floodplanet(config["data"]["root"])
 
     index = next((i for i, r in enumerate(records) if r.sample_id == args.sample_id), None)
@@ -56,7 +56,6 @@ def run(args: argparse.Namespace, checkpoint: Path, model_size: str) -> None:
 
     device = torch.device(args.device)
     model_config = dict(config["model"])
-    model_config["clay_checkpoint"] = str(checkpoint)
     model_config["clay_model_size"] = model_size
     encoder = SharedClayEncoder(model_config, config["sensors"]).to(device).eval()
 
@@ -100,8 +99,8 @@ def main() -> None:
     parser.add_argument("--smoke", action="store_true", help="使用官方 Encoder 的临时随机 tiny 权重")
     args = parser.parse_args()
 
-    config = load_config(args.config)
-    patch_size = config["model"].get("patch_size", 8)
+    config = load_config(args.config, clay_checkpoint=args.checkpoint)
+    patch_size = config["model"]["patch_size"]
     if args.image_size < patch_size or args.image_size % patch_size:
         parser.error(f"--image-size 必须是 {patch_size} 的正整数倍")
     if args.smoke:
@@ -110,12 +109,8 @@ def main() -> None:
             make_smoke_checkpoint(checkpoint, patch_size)
             run(args, checkpoint, "tiny")
     else:
-        checkpoint = args.checkpoint or Path(config["model"]["clay_checkpoint"])
-        if not checkpoint.is_absolute():
-            checkpoint = PROJECT / checkpoint
-        if not checkpoint.is_file():
-            parser.error(f"缺少 Clay 权重：{checkpoint}；提供 --checkpoint 或使用 --smoke")
-        run(args, checkpoint, args.model_size or config["model"].get("clay_model_size", "large"))
+        checkpoint = Path(config["model"]["clay_checkpoint"])
+        run(args, checkpoint, args.model_size or config["model"]["clay_model_size"])
 
 
 if __name__ == "__main__":

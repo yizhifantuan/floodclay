@@ -41,6 +41,8 @@ class ModelTest(unittest.TestCase):
         torch.manual_seed(1)
         config = {
             "clay_checkpoint": "unused-in-tests.ckpt",
+            "clay_model_size": "large",
+            "freeze_clay": True,
             "patch_size": 8,
             "feature_channels": 32,
             "feature_size": 4,

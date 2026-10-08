@@ -27,7 +27,7 @@ class TeacherStudentFloodModel(nn.Module):
         # 创建一个解码器对象，用clay_encoder里面的类
         self.encoder = SharedClayEncoder(model_config, sensor_config)
         # 读取特征通道数
-        channels = int(model_config["feature_channels"])
+        channels = model_config["feature_channels"]
         # 读取modalities的长度
         modalities = len(self.modalities)
         # 创建特征对齐模块。它接收编码器特征，并把特征调整到后续模块需要的通道数和空间大小
@@ -35,32 +35,35 @@ class TeacherStudentFloodModel(nn.Module):
             self.encoder.output_dim,
             channels,
             self.modalities,
-            int(model_config["feature_size"]),
+            model_config["feature_size"],
         )
         # 创建随机“遮模态”的工具。训练学生时，它决定本次让学生看不到哪些模态
         self.mask_sampler = ModalityMaskSampler(
-            max_drop=int(model_config.get("max_random_drop", 2)),
-            drop_probability=float(model_config.get("drop_probability", 1.0)),
+            max_drop=model_config["max_random_drop"],
+            drop_probability=model_config["drop_probability"],
         )
         # 从可用模态中提取共享特征
         self.shared_representation = SharedRepresentation(modalities, channels)
         # 根据已有特征推测缺失模态的特征
         self.generator = MissingModalityGenerator(modalities, channels)
         # 创建两个跨模态注意力融合模块，教师和学生各用一个；注意力头是4
-        heads = int(model_config.get("fusion_heads", 4))
+        heads = model_config["fusion_heads"]
         self.teacher_fusion = CrossModalAttentionFusion(modalities, channels, heads)
         self.student_fusion = CrossModalAttentionFusion(modalities, channels, heads)
         # 创建两个解码器。解码器把融合后的特征转换成分割结果
-        output_size = int(model_config["output_size"])
+        output_size = model_config["output_size"]
         self.teacher_decoder = SegmentationDecoder(channels, output_size)
         self.student_decoder = SegmentationDecoder(channels, output_size)
     # 把原始输入变成对齐特征
     def encode(self, batch: dict[str, Any]) -> torch.Tensor:
+        # 编码器
         base = self.encoder(batch["images"], batch["time"], batch["latlon"])
+        # 统一尺度后的数据
         return self.aligner(base)
     # 教师分支
     def _teacher_branch(self, aligned: torch.Tensor) -> dict[str, torch.Tensor]:
         # 创建一个全是 True 的表，表示每个样本的每个模态都可用
+        # aligned 是三种模态经过 Clay 编码、再经过特征对齐后的结果
         complete = torch.ones(
             aligned.shape[0], aligned.shape[1], device=aligned.device, dtype=torch.bool
         )
