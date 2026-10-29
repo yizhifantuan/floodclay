@@ -35,7 +35,7 @@
     "clay_checkpoint": "D:/桌面/课题/数据/checkpoints/clay-v1.5.ckpt",
     "clay_model_size": "large",
     "freeze_clay": true,
-    "unfreeze_clay_last_block": true,
+    "unfreeze_clay_last_blocks": 3,
     "patch_size": 8,
     "adapter_bottleneck_dim": 32,
     "adapter_gate_hidden_dim": 16,

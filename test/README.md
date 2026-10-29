@@ -23,7 +23,7 @@ AlphaEarth 辅助分支默认关闭，在配置文件中修改 `alphaearth.enabl
 
 当前 `patch_size=8`，直接严格加载 Clay 原始 8×8 Patch 权重，不对权重重采样。PS 在模型内部缩放后，位置编码使用有效 GSD：原始 GSD × 原图边长 / Clay 输入边长；例如 1024→512 时为 3×2=6 米。S1/S2 使用原始 GSD，不做 Patch 尺寸补偿。此前按 Patch=16 训练的完整分割检查点不能直接用于当前 Patch=8 模型。
 
-主干默认设置为 `freeze_clay=true`、`unfreeze_clay_last_block=true`：冻结其余 Clay 参数，仅训练最后一个 Transformer Block（Large 为第 24 层，含 Attention、FeedForward 和 Block 内部 LayerNorm）。Patch Embedding、CLS token、前 23 层和 Transformer 末尾的独立 LayerNorm 保持冻结；Adapter 及其他任务模块照常训练。最后一个 Block 跟随训练/评估模式切换，由现有 AdamW 自动收集，使用配置中的学习率及余弦调度。启动训练时打印 Clay 主干可训练参数量。设置 `unfreeze_clay_last_block=false` 可恢复完全冻结主干；设置 `freeze_clay=false` 则训练整个主干。旧检查点没有新增开关时保持原有冻结策略，新配置和更新后的主干权重均随检查点保存。开放最后一层会增加训练所需的梯度与优化器状态显存。
+主干默认设置为 `freeze_clay=true`、`unfreeze_clay_last_blocks=3`：冻结其余 Clay 参数，仅训练最后三个 Transformer Block（Large 为第 22、23、24 层，含 Attention、FeedForward 和 Block 内部 LayerNorm）。Patch Embedding、CLS token、前 21 层和 Transformer 末尾的独立 LayerNorm 保持冻结；Adapter 及其他任务模块照常训练。开放的 Block 跟随训练/评估模式切换，由现有 AdamW 自动收集，使用配置中的学习率及余弦调度。启动训练时打印 Clay 主干可训练参数量。将数量设为 `0` 可完全冻结主干，设为 `1` 可恢复仅开放最后一层，设为 `3` 开放最后三层；数量必须为不超过模型深度的非负整数。设置 `freeze_clay=false` 则训练整个主干。新数量配置优先于旧布尔开关；旧检查点只有 `unfreeze_clay_last_block=true/false` 时仍分别开放一层/零层，两个配置都没有时保持完全冻结。配置和更新后的主干权重均随检查点保存，评估旧模型时沿用检查点配置。开放更多层会增加梯度与优化器状态显存。
 
 PS 默认采用双路输入：原图送入轻量 CNN，同时生成 512×512 输入送入 Clay。配置位于 `model.ps_encoder_size=512` 和 `model.ps_detail_enabled=true`。CNN 使用四级深度可分离卷积，通道为 16/32/64/64，原图 1024×1024 时输出 64×64 特征；1×1 卷积投影至 Clay 通道数，在最后一层 Adapter 和最终归一化后与 PS 特征残差相加，再进入现有特征对齐。Large 配置新增 73,653 个参数。
 融合系数 scale 从 0 开始：第一步先更新 scale，随后梯度进入 CNN。教师和学生共用 CNN 参数，按各自模态掩码分别执行；PS 被隐藏时，原图在 CNN 前屏蔽，融合结果再次屏蔽，全批次缺 PS 时跳过 CNN。CNN 不直接改写编码器的 ShareF。
@@ -48,7 +48,7 @@ Clay 源码位于项目根目录的 `claymodel/`；总测试会检查实际加�
 本完整流程测试和正式入口采用相同输入策略：S1/S2 使用原始影像尺寸（如 311×311）；数据集保留 PS 原图供 CNN 使用，模型内部按 `configs/default.json` 的 `model.ps_encoder_size` 生成 Clay 输入，默认 512×512。测试脚本不提前缩小 PS。标签、输出尺寸、特征通道、融合、解码器和全部损失沿用正式配置。
 运行时打印验证参考样本的各模态输入尺寸，结束时打印整个流程的峰值显存和当前占用（MiB），并写入 `evaluation.json` 的 `gpu_memory`。
 结束时还打印总运行时长（秒和分钟），并写入 `evaluation.json` 的 `runtime_seconds`。计时使用 `perf_counter()`，从 `main()` 开始，覆盖配置/数据准备、模型加载、训练、验证、权重保存与恢复、测试、预测导出和流程检查；结束前同步 CUDA，不包含模块导入和最后的报告写入/打印。
-三路 Clay 共享真实预训练主干权重，默认仅开放最后一个 Block 学习；每个 Block 后插入一个独立的 MixtureAdapter，默认 large 模型共 24 个。
+三路 Clay 共享真实预训练主干权重，默认开放最后三个 Block 学习；每个 Block 后插入一个独立的 MixtureAdapter，默认 large 模型共 24 个。
 每个 Adapter 使用三路独立 LayerNorm、共享降维/升维、3×3 深度卷积本模态专家、r→r 通道 MLP 跨模态专家，以及 3r→16→2 位置级软门控。
 共享 r→1 评分器在其他两路可用观测中归一化，汇聚互补特征；缺失模态不参与来源评分，只有一路时退回本模态专家。
 三路影像应覆盖相同地理范围（数据集已有检查），瓶颈特征在 16×16 网格上交互，再插值回各自 patch 网格；CLS token 不进入 Adapter。

@@ -1,4 +1,4 @@
-"""用缩小的真实 Clay 编码器验证仅最后一层训练及检查点恢复。"""
+"""用缩小的真实 Clay 编码器验证末尾 Block 的部分训练及检查点恢复。"""
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,7 +15,7 @@ from floodclay.models import build_model
 from floodclay.models.clay_encoder import ClayPatchEncoder, MODEL_SIZES
 
 
-SMALL_SIZE = {"dim": 32, "depth": 3, "heads": 2, "dim_head": 16, "mlp_ratio": 2}
+SMALL_SIZE = {"dim": 32, "depth": 4, "heads": 2, "dim_head": 16, "mlp_ratio": 2}
 
 
 class ClayLastBlockTest(unittest.TestCase):
@@ -62,15 +62,39 @@ class ClayLastBlockTest(unittest.TestCase):
             "availability": torch.ones(1, 3, dtype=torch.bool),
         }
 
-    def test_current_default_opens_last_block(self):
+    def test_current_default_opens_last_three_blocks(self):
         config = load_config()["model"]
         self.assertTrue(config["freeze_clay"])
-        self.assertTrue(config["unfreeze_clay_last_block"])
+        self.assertEqual(config["unfreeze_clay_last_blocks"], 3)
 
     def test_only_last_block_parameters_are_trainable(self):
         backbone = self.make_encoder(freeze=True, unfreeze_last_block=True)
         for name, parameter in backbone.encoder.named_parameters():
-            self.assertEqual(parameter.requires_grad, name.startswith("transformer.layers.2."), name)
+            self.assertEqual(parameter.requires_grad, name.startswith("transformer.layers.3."), name)
+
+    def test_block_count_controls_parameters_and_training_modes(self):
+        for count in (0, 1, 3, 4):
+            with self.subTest(count=count):
+                backbone = self.make_encoder(
+                    freeze=True, unfreeze_last_block=True, unfreeze_last_blocks=count,
+                )
+                prefixes = tuple(
+                    f"transformer.layers.{index}." for index in range(SMALL_SIZE["depth"] - count, SMALL_SIZE["depth"])
+                )
+                for name, parameter in backbone.encoder.named_parameters():
+                    self.assertEqual(parameter.requires_grad, name.startswith(prefixes), name)
+                for mode in (True, False, True):
+                    backbone.train(mode)
+                    for index, block in enumerate(backbone.encoder.transformer.layers):
+                        self.assertEqual(block.training, mode and index >= SMALL_SIZE["depth"] - count)
+                    self.assertFalse(backbone.encoder.patch_embedding.training)
+                    self.assertFalse(backbone.encoder.transformer.norm.training)
+
+    def test_invalid_block_counts_are_rejected(self):
+        for count in (-1, 5, True, 1.5, "3"):
+            with self.subTest(count=count):
+                with self.assertRaisesRegex(ValueError, "unfreeze_last_blocks"):
+                    self.make_encoder(freeze=True, unfreeze_last_blocks=count)
 
     def test_partial_training_modes_survive_train_eval_switches(self):
         backbone = self.make_encoder(freeze=True, unfreeze_last_block=True)
@@ -85,9 +109,19 @@ class ClayLastBlockTest(unittest.TestCase):
 
     def test_old_configs_preserve_fully_frozen_backbone(self):
         _, config = self.make_model()
-        config["model"].pop("unfreeze_clay_last_block")
+        config["model"].pop("unfreeze_clay_last_blocks")
         model, _ = self.make_model(load_evaluation_config({"config": config}))
         self.assertFalse(any(p.requires_grad for p in model.encoder.backbone.parameters()))
+
+    def test_legacy_boolean_configs_preserve_last_block_selection(self):
+        _, config = self.make_model()
+        config["model"].pop("unfreeze_clay_last_blocks")
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                config["model"]["unfreeze_clay_last_block"] = enabled
+                model, _ = self.make_model(load_evaluation_config({"config": config}))
+                for name, parameter in model.encoder.backbone.encoder.named_parameters():
+                    self.assertEqual(parameter.requires_grad, enabled and name.startswith("transformer.layers.3."), name)
 
     def test_disabling_freeze_still_trains_entire_backbone(self):
         backbone = self.make_encoder(freeze=False, unfreeze_last_block=True)
@@ -109,13 +143,13 @@ class ClayLastBlockTest(unittest.TestCase):
         self.assertTrue(bool(torch.isfinite(last.grad).all()))
         self.assertGreater(last.grad.abs().sum().item(), 0)
         optimizer.step()
-        self.assertFalse(torch.equal(before["transformer.layers.2.0.to_qkv.weight"], last))
+        self.assertFalse(torch.equal(before["transformer.layers.3.0.to_qkv.weight"], last))
         for name, parameter in backbone.encoder.named_parameters():
             if not parameter.requires_grad:
                 self.assertIsNone(parameter.grad, name)
                 torch.testing.assert_close(parameter, before[name], rtol=0, atol=0)
 
-    def test_real_teacher_student_training_updates_shared_last_block_and_restores_checkpoint(self):
+    def test_real_teacher_student_training_updates_last_three_blocks_and_restores_checkpoint(self):
         model, config = self.make_model()
         batch = self.make_batch()
         student_mask = torch.tensor([[True, False, True]])
@@ -128,15 +162,21 @@ class ClayLastBlockTest(unittest.TestCase):
         loss, _ = criterion(outputs, target, torch.ones_like(target, dtype=torch.bool))
         self.assertTrue(bool(torch.isfinite(loss)))
         loss.backward()
-        last = backbone.transformer.layers[-1][0].to_qkv.weight
-        self.assertGreater(last.grad.abs().sum().item(), 0)
-        self.assertTrue(bool(torch.isfinite(last.grad).all()))
+        for block in backbone.transformer.layers[-3:]:
+            weight = block[0].to_qkv.weight
+            self.assertIsNotNone(weight.grad)
+            self.assertGreater(weight.grad.abs().sum().item(), 0)
+            self.assertTrue(bool(torch.isfinite(weight.grad).all()))
         self.assertTrue(any(
             adapter.up.weight.grad is not None and adapter.up.weight.grad.abs().sum().item() > 0
             for adapter in model.encoder.adapters.values()
         ))
         optimizer.step()
-        self.assertFalse(torch.equal(before["transformer.layers.2.0.to_qkv.weight"], last))
+        for index in range(1, 4):
+            self.assertFalse(torch.equal(
+                before[f"transformer.layers.{index}.0.to_qkv.weight"],
+                backbone.transformer.layers[index][0].to_qkv.weight,
+            ))
         for name, parameter in backbone.named_parameters():
             if not parameter.requires_grad:
                 self.assertIsNone(parameter.grad, name)
@@ -149,9 +189,13 @@ class ClayLastBlockTest(unittest.TestCase):
             save_checkpoint(checkpoint, model, optimizer, 1, config, {"iou": 0.5}, split_manifest={})
             payload = read_checkpoint(checkpoint)
             restored_config = load_evaluation_config(payload)
-            self.assertTrue(restored_config["model"]["unfreeze_clay_last_block"])
+            self.assertEqual(restored_config["model"]["unfreeze_clay_last_blocks"], 3)
             restored, _ = self.make_model(restored_config)
             load_checkpoint(checkpoint, restored, payload=payload)
+        self.assertEqual(
+            {name for name, p in restored.encoder.backbone.named_parameters() if p.requires_grad},
+            {name for name, p in model.encoder.backbone.named_parameters() if p.requires_grad},
+        )
         model.eval()
         restored.eval()
         with torch.no_grad():

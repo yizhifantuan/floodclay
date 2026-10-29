@@ -37,19 +37,29 @@ class ClayPatchEncoder(nn.Module):
         freeze: bool = True,
         # 冻结主干时，允许最后一个 Transformer Block 学习。
         unfreeze_last_block: bool = False,
+        # 指定开放末尾多少个 Block；未设置时兼容旧的布尔开关。
+        unfreeze_last_blocks: int | None = None,
     ) -> None:
         # 初始化父类
         super().__init__()
         from claymodel.model import Encoder
         # 根据 model_size 从配置字典中找到对应参数
         size = MODEL_SIZES[model_size]
+        if unfreeze_last_blocks is None:
+            unfreeze_last_blocks = 1 if unfreeze_last_block else 0
+        if (
+            isinstance(unfreeze_last_blocks, bool)
+            or not isinstance(unfreeze_last_blocks, int)
+            or not 0 <= unfreeze_last_blocks <= size["depth"]
+        ):
+            raise ValueError(f"unfreeze_last_blocks must be an integer from 0 to {size['depth']}")
         # 记录 Clay 输出特征的维度
         self.dim = size["dim"]
         # 每一个块的大小
         self.patch_size = patch_size
         # 是否冻结
         self.freeze = freeze
-        self.unfreeze_last_block = unfreeze_last_block
+        self.unfreeze_last_blocks = unfreeze_last_blocks
         # 创建真正负责提取特征的 Clay 编码器，并把它保存为
         self.encoder = Encoder(
             # 不遮挡任何 patch，使用完整图像进行特征提取
@@ -66,10 +76,11 @@ class ClayPatchEncoder(nn.Module):
         # 读取预训练权重
         self._load_encoder_weights(Path(checkpoint))
         if freeze:
-            # 先冻结主干，再按配置只开放最后一个 Block。
+            # 先冻结主干，再按配置开放末尾 N 个 Block；N=0 时全部冻结。
             self.encoder.requires_grad_(False)
-            if self.unfreeze_last_block:
-                self.encoder.transformer.layers[-1].requires_grad_(True)
+            if self.unfreeze_last_blocks:
+                for block in self.encoder.transformer.layers[-self.unfreeze_last_blocks:]:
+                    block.requires_grad_(True)
         self.train(self.training)
     # 读取clay1.5的权重
     def _load_encoder_weights(self, checkpoint: Path) -> None:
@@ -93,12 +104,13 @@ class ClayPatchEncoder(nn.Module):
     # 重写 train() 方法
     # 返回的是一个 ClayPatchEncoder 类型的对象
     def train(self, mode: bool = True) -> "ClayPatchEncoder":
-        # 冻结部分保持评估模式，最后一个可训练 Block 跟随外部模式切换。
+        # 冻结部分保持评估模式，末尾可训练 Block 跟随外部模式切换。
         super().train(mode)
         if self.freeze:
             self.encoder.eval()
-            if self.unfreeze_last_block:
-                self.encoder.transformer.layers[-1].train(mode)
+            if self.unfreeze_last_blocks:
+                for block in self.encoder.transformer.layers[-self.unfreeze_last_blocks:]:
+                    block.train(mode)
         return self
     # 前向传播
     def forward(
@@ -115,7 +127,7 @@ class ClayPatchEncoder(nn.Module):
         gsd: float,
     ) -> torch.Tensor:# 返回一个张量
         # 单模态入口保持可用；三路交互由 SharedClayEncoder 逐层执行。
-        # prepare_tokens 单独处理 Patch Embedding 的冻结；最后一层可独立训练。
+        # prepare_tokens 单独处理 Patch Embedding 的冻结；末尾 Block 可独立训练。
         tokens, grid = self.prepare_tokens(pixels, time, latlon, waves, gsd)
         encoded = self.encoder.transformer(tokens)
         return self.to_feature_map(encoded, grid)
@@ -131,7 +143,7 @@ class ClayPatchEncoder(nn.Module):
         # 官方 Patch Embedding + 位置/时间/经纬度编码 + CLS token。
         # 根据 Patch 的二维位置和影像空间分辨率，生成位置编码
         from claymodel.utils import posemb_sincos_2d_with_gsd
-        # Patch Embedding 仍随 freeze 冻结，开放最后一个 Block 不改变这里。
+        # Patch Embedding 仍随 freeze 冻结，开放末尾 Block 不改变这里。
         with torch.set_grad_enabled(not self.freeze and torch.is_grad_enabled()):
             height, width = pixels.shape[-2:]
             # 计算高和宽分别需要补多少像素，才能被 patch_size 整除
@@ -210,6 +222,7 @@ class SharedClayEncoder(nn.Module):
             freeze=model_config["freeze_clay"],
             # 旧检查点未配置时，沿用原先的主干冻结策略。
             unfreeze_last_block=model_config.get("unfreeze_clay_last_block", False),
+            unfreeze_last_blocks=model_config.get("unfreeze_clay_last_blocks"),
         )
         # 读取 Clay 编码器输出的特征维度，并保存下来
         self.output_dim = self.backbone.dim
