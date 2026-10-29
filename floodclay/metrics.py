@@ -17,13 +17,14 @@ class BinarySegmentationMetrics:
 
     @torch.no_grad()
     def update(self, logits: torch.Tensor, target: torch.Tensor, valid: torch.Tensor) -> None:
-        prediction = torch.sigmoid(logits) >= self.threshold
-        truth = target >= 0.5
-        mask = valid.bool()
-        self.tp += int((prediction & truth & mask).sum().item())
-        self.fp += int((prediction & ~truth & mask).sum().item())
-        self.fn += int((~prediction & truth & mask).sum().item())
-        self.tn += int((~prediction & ~truth & mask).sum().item())
+        # 先选出有效标签，四项统计复用同一有效区域。
+        valid = valid.bool()
+        prediction = torch.sigmoid(logits[valid]) >= self.threshold
+        truth = target[valid] >= 0.5
+        self.tp += (prediction & truth).sum().item()
+        self.fp += (prediction & ~truth).sum().item()
+        self.fn += (~prediction & truth).sum().item()
+        self.tn += (~prediction & ~truth).sum().item()
 
     def compute(self) -> dict[str, float]:
         eps = 1e-9

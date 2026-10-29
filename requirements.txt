@@ -1,7 +1,9 @@
 numpy>=1.26
 rasterio>=1.3
 torch>=2.4
+torchvision>=0.19
+einops~=0.7.0
+timm>=0.9.16
 
-# Install the official Clay v1.5 implementation separately:
-# pip install git+https://github.com/Clay-foundation/model.git
-
+# Clay v1.5 source is bundled in ./claymodel; no separate claymodel install is needed.
+# Original package metadata and provenance are kept in claymodel/UPSTREAM_METADATA.txt.

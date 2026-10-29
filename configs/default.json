@@ -1,7 +1,7 @@
 {
   "data": {
-    "root": "D:/桌面/课题/数据/FloodPlanet/FloodPlanet1",
-    "label_size": 256,
+    "root": "D:/桌面/课题/数据/FloodPlanet",
+    "label_size": 1024,
     "use_geo_metadata": true,
     "val_fraction": 0.15,
     "test_fraction": 0.15,
@@ -32,19 +32,32 @@
     }
   },
   "model": {
-    "clay_checkpoint": "checkpoints/clay-v1.5.ckpt",
+    "clay_checkpoint": "D:/桌面/课题/数据/checkpoints/clay-v1.5.ckpt",
     "clay_model_size": "large",
     "freeze_clay": true,
+    "unfreeze_clay_last_block": true,
     "patch_size": 8,
+    "adapter_bottleneck_dim": 32,
+    "adapter_gate_hidden_dim": 16,
+    "adapter_residual_scale": 0.1,
+    "adapter_grid_size": 16,
     "feature_channels": 256,
     "feature_size": 16,
     "fusion_heads": 8,
     "max_random_drop": 2,
-    "drop_probability": 1.0,
-    "output_size": 256
+    "drop_probability": 0.8571428571428571,
+    "output_size": 1024,
+    "ps_encoder_size": 512,
+    "ps_detail_enabled": true
+  },
+  "alphaearth": {
+    "enabled": false,
+    "root": "D:/桌面/课题/数据/AlphaEarth",
+    "input_size": 64,
+    "hidden_channels": 64,
+    "residual_scale": 0.1
   },
   "loss": {
-    "temperature": 2.0,
     "weights": {
       "teacher_seg": 1.0,
       "student_seg": 1.0,
@@ -56,13 +69,14 @@
     }
   },
   "training": {
-    "epochs": 1,
+    "epochs": 100,
+    "early_stopping_patience": 20,
     "batch_size": 1,
     "learning_rate": 0.0001,
     "weight_decay": 0.0001,
     "gradient_clip": 1.0,
     "amp": true,
     "seed": 42,
-    "output_dir": "runs/default"
+    "output_dir": "runs"
   }
 }

@@ -1,6 +1,7 @@
 checkpoints/
 runs/
 predictions/
+downloads/
 __pycache__/
 *.py[cod]
 .pytest_cache/

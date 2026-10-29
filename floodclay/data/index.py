@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import random
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -11,18 +13,29 @@ from typing import Iterable
 class SampleRecord:
     sample_id: str
     event: str
-    ps: str
+    ps: str | None
     s1: str | None
     s2: str | None
-    label: str
+    label: str | None
+    timestamp: str
 
     # 检验模态是否存在
+    # @property把一个方法变成类似属性的访问方式
     @property
     # 定义一个availability的属性
     def availability(self) -> tuple[bool, bool, bool]:
-        """Availability in the fixed order (S1, S2, PS)."""
         # 返回tuple[bool, bool, bool]
-        return self.s1 is not None, self.s2 is not None, True
+        return self.s1 is not None, self.s2 is not None, self.ps is not None
+
+    @property
+    def reference_modality(self) -> str:
+        """固定优先级选择实际存在的影像，不要求任何一路必须存在。"""
+        # getattr() 用于获取对象的属性;next()第一个匹配了就不继续往下
+        return next(name for name in ("ps","s1","s2") if getattr(self, name) is not None)
+
+    @property
+    def reference_path(self) -> str:
+        return getattr(self, self.reference_modality)
 
     # 判断样本是否完整
     @property
@@ -38,61 +51,61 @@ class SampleRecord:
         result["availability"] = list(self.availability)
         # 字典里记录三模态是否完整
         result["complete"] = self.is_complete
+        result["reference_modality"] = self.reference_modality
         return result
 
 # 扫描一个文件夹中的 .tif
 def _files_by_stem(directory: Path) -> dict[str, Path]:
-    if not directory.is_dir():
-        raise FileNotFoundError(f"Required directory does not exist: {directory}")
     # 寻找当前文件夹里所有以 .tif 结尾的文件；path.stem获取不带扩展的文件名
     return {path.stem: path for path in directory.glob("*.tif")}
 
 # 扫描整个 FloodPlanet 数据集
-def scan_floodplanet(root: str | Path) -> list[SampleRecord]:
-    # 把 root 转换成 Path 对象。
-    root = Path(root).expanduser()
-    # 四个数据的路径；分别建立字典
-    ps = _files_by_stem(root / "PS" / "images")
-    s1 = _files_by_stem(root / "S1" / "images")
-    s2 = _files_by_stem(root / "S2" / "images")
-    labels = _files_by_stem(root / "S2" / "masks")
-    # 检查标签是否缺失
-    missing_labels = sorted(set(ps) - set(labels))
-    if missing_labels:
-        preview = ", ".join(missing_labels[:5])
-        raise ValueError(f"PS samples without labels ({len(missing_labels)}): {preview}")
-    # 建立样本记录，创建一个空列表，用来保存全部的样本；列表中存放SampleRecord对象
+def scan_floodplanet(root: str | Path, require_labels: bool = True) -> list[SampleRecord]:
+    """按事件目录配对影像，读取参考影像的 STAC 时间（PS → S1 → S2）。"""
+    root = Path(root)
     records: list[SampleRecord] = []
-    # 循环处理每一个ps样本
-    for sample_id in sorted(ps):
-        records.append(
-            SampleRecord(
-                sample_id=sample_id,
-                event=sample_id.split("_", maxsplit=1)[0],
-                ps=str(ps[sample_id]),
-                s1=str(s1[sample_id]) if sample_id in s1 else None,
-                s2=str(s2[sample_id]) if sample_id in s2 else None,
-                label=str(labels[sample_id]),
+    seen_ids: set[str] = set()
+    for event_dir in sorted((root / "FloodPlanet").iterdir()):
+        if not event_dir.is_dir():
+            continue
+        files = {name: _files_by_stem(event_dir / name) for name in ("PS", "S1", "S2", "labels")}
+        sample_ids = files["PS"].keys() | files["S1"].keys() | files["S2"].keys()
+        if require_labels and (missing := sample_ids - files["labels"].keys()):
+            raise ValueError(f"Image samples without labels in {event_dir.name}: {sorted(missing)}")
+        for sample_id in sorted(sample_ids):
+            if sample_id in seen_ids:
+                raise ValueError(f"Duplicate sample_id across events: {sample_id}")
+            seen_ids.add(sample_id)
+            reference = next(name for name in ("PS", "S1", "S2") if sample_id in files[name])
+            metadata_path = root / "stac_catalog" / event_dir.name / reference / sample_id / f"{sample_id}.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            timestamp = datetime.fromisoformat(metadata["properties"]["datetime"].replace("Z", "+00:00"))
+            if timestamp.tzinfo is None:
+                raise ValueError(f"STAC datetime requires a timezone: {metadata_path}")
+            paths = {name.lower() if name != "labels" else "label":
+                     str(items[sample_id]) if sample_id in items else None
+                     for name, items in files.items()}
+            records.append(
+                SampleRecord(
+                    sample_id=sample_id,
+                    event=event_dir.name,
+                    timestamp=timestamp.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    **paths,
+                )
             )
-        )
-    # 最后返回的是一个 list[SampleRecord] 列表
+    if not records:
+        raise ValueError(f"No FloodPlanet image samples found in {root / 'FloodPlanet'}")
     return records
 
 # 按洪水事件划分数据集
 def split_by_event(
-    records: Iterable[SampleRecord],
+    records: list[SampleRecord],
     val_fraction: float = 0.15,
     test_fraction: float = 0.15,
     seed: int = 42,
 ) -> dict[str, list[SampleRecord]]:
-    # 把输入转换成列表
-    records = list(records)
     # 取出所有不重复的事件名称
     events = sorted({record.event for record in records})
-    if len(events) < 3:
-        raise ValueError("At least three event groups are required for train/val/test")
-    if val_fraction <= 0 or test_fraction <= 0 or val_fraction + test_fraction >= 1:
-        raise ValueError("val_fraction and test_fraction must be positive and sum to < 1")
     # 创建一个独立随机数生成器，种子为 42
     rng = random.Random(seed)
     # 随机打乱事件顺序
@@ -101,9 +114,6 @@ def split_by_event(
     n_test = max(1, round(len(events) * test_fraction))
     # 计算验证集应该包含多少个事件
     n_val = max(1, round(len(events) * val_fraction))
-    # 按事件取整后，仍必须留出训练事件。
-    if n_test + n_val >= len(events):
-        raise ValueError("Split fractions leave no training events after rounding")
     # 按数量进行分配
     test_events = set(events[:n_test])
     val_events = set(events[n_test : n_test + n_val])
@@ -124,5 +134,6 @@ def summarize(records: Iterable[SampleRecord]) -> dict[str, object]:
         "complete": sum(r.is_complete for r in records),
         "s1_missing": sum(r.s1 is None for r in records),
         "s2_missing": sum(r.s2 is None for r in records),
+        "ps_missing": sum(r.ps is None for r in records),
         "events": sorted({r.event for r in records}),
     }
