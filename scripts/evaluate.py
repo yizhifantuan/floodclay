@@ -15,6 +15,7 @@ from floodclay.config import load_config, load_evaluation_config  # noqa: E402
 from floodclay.data import FloodPlanetDataset, scan_floodplanet, restore_checkpoint_splits  # noqa: E402
 from floodclay.engine import load_checkpoint, read_checkpoint, move_to_device  # noqa: E402
 from floodclay.engine.experiments import latest_best_checkpoint  # noqa: E402
+from floodclay.image.prediction import PredictionImageWriter, experiment_image_dir  # noqa: E402
 from floodclay.metrics import BinarySegmentationMetrics  # noqa: E402
 from floodclay.models import build_model  # noqa: E402
 
@@ -41,6 +42,8 @@ def evaluate_loader(
     pattern: tuple[int, int, int] | None,
     # 是否启用混合精度
     amp: bool,
+    *,
+    image_writer: PredictionImageWriter | None = None,
 ) -> dict[str, float]:
     # 创建指标计算器
     metrics = BinarySegmentationMetrics()
@@ -64,6 +67,8 @@ def evaluate_loader(
             output = model.predict(batch, availability=selected)
         # 累计当前批次的指标统计
         metrics.update(output["logits"], batch["target"], batch["valid"])
+        if image_writer is not None:
+            image_writer.write_batch(batch, output["logits"], selected)
     # 返回整个数据集的指标
     return metrics.compute()
 
@@ -116,14 +121,29 @@ def main(checkpoint: str | Path | None = None) -> None:
     # 获取配置文件里的amp（混合精度训练）
     amp = config["training"]["amp"]
     # 遍历 SCENARIOS 中定义的所有模态组合，让模型在每一种模态组合下进行测试，并把测试结果保存到 results 字典中
-    results = {
-        # evaluate_loader 是评估函数
-        name: (evaluate_loader(model, complete_loader, device, pattern, amp)
-               if complete_loader is not None else None)
-        for name, pattern in SCENARIOS.items()
-    }
+    image_dir = experiment_image_dir(checkpoint)
+    results, image_counts = {}, {}
+    for name, pattern in SCENARIOS.items():
+        if complete_loader is None:
+            results[name], image_counts[name] = None, 0
+            continue
+        writer = PredictionImageWriter(complete_records, image_dir / name, scenario=name)
+        print(f"测试并生成预测图：{name}，共 {len(complete_records)} 个样本。", flush=True)
+        results[name] = evaluate_loader(model, complete_loader, device, pattern, amp, image_writer=writer)
+        image_counts[name] = writer.count
     # 使用真实模态缺失的测试集评估模型，并将评估结果保存到 results["natural_missingness"] 中。
-    results["natural_missingness"] = evaluate_loader(model, natural_loader, device, None, amp)
+    # 完整样本已在七种场景中出图，实际可用场景只额外保存真实缺失样本。
+    missing_ids = [record.sample_id for record in splits["test"] if not record.is_complete]
+    natural_writer = (
+        PredictionImageWriter(
+            splits["test"], image_dir / "natural_missingness",
+            scenario="natural_missingness", sample_ids=missing_ids,
+        ) if missing_ids else None
+    )
+    results["natural_missingness"] = evaluate_loader(
+        model, natural_loader, device, None, amp, image_writer=natural_writer,
+    )
+    image_counts["natural_missingness"] = natural_writer.count if natural_writer is not None else 0
     # 把模型的训练轮数、测试集样本数量以及测试结果整理到一个字典 report 中，方便后续打印或者保存成 JSON 文件
     report = {
         "checkpoint_epoch": payload["epoch"],
@@ -132,6 +152,9 @@ def main(checkpoint: str | Path | None = None) -> None:
         "split_source": "checkpoint" if payload.get("split_manifest") is not None else "training_manifest",
         "test_events": sorted({record.event for record in splits["test"]}),
         "metrics": results,
+        "prediction_images": {
+            "directory": str(image_dir.resolve()), "counts": image_counts, "threshold": 0.5,
+        },
     }
     report_json = json.dumps(report, ensure_ascii=False, indent=2)
     print(report_json)
@@ -140,6 +163,7 @@ def main(checkpoint: str | Path | None = None) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(report_json, encoding="utf-8")
     print(f"Evaluation saved to {output}")
+    print(f"预测对比图及 GeoTIFF 已保存到：{image_dir.resolve()}")
 
 
 if __name__ == "__main__":

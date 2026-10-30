@@ -12,7 +12,7 @@ PROJECT = Path(__file__).resolve().parents[1]
 
 from floodclay.config import load_config
 from floodclay.data import FloodPlanetDataset, scan_floodplanet, split_by_event
-from floodclay.engine import run_epoch, save_checkpoint, seed_everything
+from floodclay.engine import build_lr_scheduler, run_epoch, save_checkpoint, seed_everything
 from floodclay.engine.experiments import create_experiment_dir
 from floodclay.losses import MultiLevelDistillationLoss
 from floodclay.models import build_model
@@ -23,8 +23,7 @@ def make_loaders(config: dict[str, Any]) -> tuple[DataLoader, DataLoader, dict[s
     data = config["data"]
     splits = split_by_event(
         scan_floodplanet(data["root"]),
-        # 验证集所占的比例；测试集所占比；数据划分的随机种子
-        data["val_fraction"], data["test_fraction"], data["split_seed"],
+        data["train_events"], data["val_events"], data["test_events"],
     )
     # 公共数据
     dataset_args = {
@@ -67,7 +66,7 @@ def main(config_path: str | Path = PROJECT / "configs" / "default.json") -> Path
     # 定义设备对象
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # 整次实验仅在这里创建一次目录；全部 epoch、验证和最终测试共用该目录。
-    # 默认根目录为 runs，新实验与已有 default 并列保存。
+    # 默认保存在 runs/result/run_*，图像另存到 runs/image/run_*。
     output_dir = create_experiment_dir(training["output_dir"])
     training["output_dir"] = str(output_dir)
     (output_dir / "config.json").write_text(
@@ -97,10 +96,8 @@ def main(config_path: str | Path = PROJECT / "configs" / "default.json") -> Path
         # 设置权重衰减
         weight_decay=training["weight_decay"],
     )
-    # 创建学习率调度器
-    #  optimizer,    # 调整这个优化器的学习率
-    #     T_max=epochs, # 用多少次 scheduler.step() 完成一次下降
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    # 重启周期按轮数配置，内部换算为成功优化步骤数，在 run_epoch 内逐步更新。
+    scheduler = build_lr_scheduler(optimizer, training, len(train_loader))
     # 摄制混合精读训练
     scaler = torch.amp.GradScaler(
         device.type, enabled=training["amp"] and device.type == "cuda"
@@ -110,6 +107,12 @@ def main(config_path: str | Path = PROJECT / "configs" / "default.json") -> Path
         f"val_complete={len(val_loader.dataset)} encoder=clay alphaearth={model.alphaearth_enabled} "
         f"ps_encoder_size={model.encoder.ps_encoder_size} "
         f"ps_detail={model.encoder.ps_detail is not None}"
+    )
+    print(
+        f"scheduler=CosineAnnealingWarmRestarts 每次成功优化后更新 "
+        f"initial_lr={training['learning_rate']:.2e} T_0={scheduler.T_0} steps "
+        f"T_mult={scheduler.T_mult} eta_min={scheduler.eta_min:.2e}",
+        flush=True,
     )
 
     best_iou = -1.0
@@ -126,6 +129,7 @@ def main(config_path: str | Path = PROJECT / "configs" / "default.json") -> Path
         train_loss, train_metrics = run_epoch(
             model, train_loader, criterion, device, scaler,
             optimizer=optimizer, gradient_clip=training["gradient_clip"],
+            scheduler=scheduler,
         )
         if device.type == "cuda":
             torch.cuda.synchronize(device)
@@ -143,11 +147,10 @@ def main(config_path: str | Path = PROJECT / "configs" / "default.json") -> Path
                 flush=True,
             )
         val_loss, val_metrics = run_epoch(model, val_loader, criterion, device, scaler)
-        # 每次调用 scheduler.step() 才会调整到下一步的学习率
-        scheduler.step()
         row = {
             "epoch": epoch,
             "lr": learning_rate,
+            "lr_end": optimizer.param_groups[0]["lr"],
             "train_loss": train_loss,
             "train_metrics": train_metrics,
             "train_seconds": train_seconds,
@@ -160,14 +163,16 @@ def main(config_path: str | Path = PROJECT / "configs" / "default.json") -> Path
         print(
             f"epoch={epoch:03d} train_loss={train_loss['total']:.4f} "
             f"val_loss={val_loss['total']:.4f} val_iou={val_metrics['iou']:.4f} "
+            f"val_miou={val_metrics['miou']:.4f} "
+            f"lr={learning_rate:.2e}->{optimizer.param_groups[0]['lr']:.2e} "
             f"train_time={train_seconds:.2f}s ({train_seconds / 60:.2f}min)"
         )
-        save_checkpoint(output_dir / "last.pt", model, optimizer, epoch, config, val_metrics, split_manifest=manifest)
+        save_checkpoint(output_dir / "last.pt", model, optimizer, epoch, config, val_metrics, split_manifest=manifest, scheduler=scheduler)
         if val_metrics["iou"] > best_iou:
             best_iou = val_metrics["iou"]
             best_epoch = epoch
             epochs_without_improvement = 0
-            save_checkpoint(output_dir / "best.pt", model, optimizer, epoch, config, val_metrics, split_manifest=manifest)
+            save_checkpoint(output_dir / "best.pt", model, optimizer, epoch, config, val_metrics, split_manifest=manifest, scheduler=scheduler)
         else:
             epochs_without_improvement += 1
         print(f"验证 IoU 连续未提升：{epochs_without_improvement}/{patience} 轮", flush=True)

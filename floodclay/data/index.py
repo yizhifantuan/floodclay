@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import random
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -100,30 +100,32 @@ def scan_floodplanet(root: str | Path, require_labels: bool = True) -> list[Samp
 # 按洪水事件划分数据集
 def split_by_event(
     records: list[SampleRecord],
-    val_fraction: float = 0.15,
-    test_fraction: float = 0.15,
-    seed: int = 42,
+    train_events: Sequence[str],
+    val_events: Sequence[str],
+    test_events: Sequence[str],
 ) -> dict[str, list[SampleRecord]]:
-    # 取出所有不重复的事件名称
-    events = sorted({record.event for record in records})
-    # 创建一个独立随机数生成器，种子为 42
-    rng = random.Random(seed)
-    # 随机打乱事件顺序
-    rng.shuffle(events)
-    # 计算测试集应该包含多少个事件
-    n_test = max(1, round(len(events) * test_fraction))
-    # 计算验证集应该包含多少个事件
-    n_val = max(1, round(len(events) * val_fraction))
-    # 按数量进行分配
-    test_events = set(events[:n_test])
-    val_events = set(events[n_test : n_test + n_val])
-    train_events = set(events[n_test + n_val :])
-    # 字典有三个键，每个键对应一组 SampleRecord 样本记录
-    return {
-        "train": [r for r in records if r.event in train_events],
-        "val": [r for r in records if r.event in val_events],
-        "test": [r for r in records if r.event in test_events],
+    """严格按配置的事件列表分组，不随机划分或按比例分配。"""
+    groups = {"train": train_events, "val": val_events, "test": test_events}
+    assigned: set[str] = set()
+    for name, events in groups.items():
+        if isinstance(events, str) or not events or len(set(events)) != len(events):
+            raise ValueError(f"{name}_events 必须为非空且不重复的事件列表")
+        overlap = assigned.intersection(events)
+        if overlap:
+            raise ValueError(f"训练、验证和测试事件不能重叠：{sorted(overlap)}")
+        assigned.update(events)
+    groups = {name: set(events) for name, events in groups.items()}
+    unknown = {record.event for record in records} - assigned
+    if unknown:
+        raise ValueError(f"数据包含未配置划分的事件：{sorted(unknown)}")
+    splits = {
+        name: [record for record in records if record.event in events]
+        for name, events in groups.items()
     }
+    for name, items in splits.items():
+        if not items:
+            raise ValueError(f"{name} 子集没有样本，请检查事件列表和数据目录")
+    return splits
 
 # 统计数据集信息
 def summarize(records: Iterable[SampleRecord]) -> dict[str, object]:

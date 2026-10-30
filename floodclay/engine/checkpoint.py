@@ -17,6 +17,7 @@ def save_checkpoint(
     metrics: dict[str, float],
     *,
     split_manifest: dict[str, object],
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
 ) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -28,6 +29,7 @@ def save_checkpoint(
             "config": config,
             "metrics": metrics,
             "split_manifest": split_manifest,
+            **({"scheduler": scheduler.state_dict()} if scheduler is not None else {}),
         },
         path,
     )

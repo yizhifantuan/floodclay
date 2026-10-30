@@ -3,10 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import numpy as np
-import rasterio
 import torch
-from affine import Affine
 from torch.utils.data import DataLoader
 
 # 找到项目根目录，并让 Python 能从这个目录导入项目代码
@@ -23,41 +20,20 @@ from floodclay.config import load_config, load_evaluation_config  # noqa: E402
 from floodclay.data import FloodPlanetDataset, scan_floodplanet  # noqa: E402
 from floodclay.engine import load_checkpoint, move_to_device, read_checkpoint  # noqa: E402
 from floodclay.engine.experiments import latest_best_checkpoint  # noqa: E402
+from floodclay.image.prediction import experiment_image_dir, write_geotiff  # noqa: E402
 from floodclay.models import build_model  # noqa: E402
 
-# 把预测结果保存为geotiff文件
-# reference参考影像
-def write_geotiff(reference: str, output: Path, array: np.ndarray, dtype: str) -> None:
-    if array.ndim != 2 or min(array.shape) <= 0:
-        raise ValueError("GeoTIFF prediction must be a nonempty 2D array")
-    height, width = array.shape
-    with rasterio.open(reference) as src:
-        # 复制参考影像的文件配置
-        profile = src.profile.copy()
-        # 保留模型输出网格，按参考范围调整像元大小，不将 1024 输出降回 S2 尺寸。
-        transform = src.transform * Affine.scale(src.width / width, src.height / height)
-    # 修改输出文件配置
-    # count 输出只有一个波段
-    profile.update(count=1, height=height, width=width, transform=transform, dtype=dtype, nodata=None)
-    # 创建输出目录
-    #  output.parent获取输出文件所在的目录
-    output.parent.mkdir(parents=True, exist_ok=True)
-    # 创建输出 GeoTIFF
-    with rasterio.open(output, "w", **profile) as dst:
-        dst.write(array.astype(dtype, copy=False), 1)
-
-
 def main() -> None:
-    # 运行设置：修改样本编号和输出目录后，直接运行 main()。
+    # 运行设置：修改样本编号后直接运行，图像保存到本次实验的 image 目录。
     config_path = PROJECT / "configs" / "default.json"
     checkpoint = None  # None 选择输出根目录下最新一个已有 best.pt 的实验。
     sample_id = "BGD_40_119"
-    output_dir = PROJECT / "predictions"
     threshold = 0.5
     # 加载配置
     config = load_config(config_path)
     if checkpoint is None:
         checkpoint = latest_best_checkpoint(config["training"]["output_dir"])
+    output_dir = experiment_image_dir(checkpoint) / "predictions"
     # 预测恢复训练配置，避免默认配置变化后误用 PS 尺寸或 CNN 开关。
     payload = read_checkpoint(checkpoint, map_location="cpu")
     config = load_evaluation_config(payload)

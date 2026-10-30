@@ -1,4 +1,4 @@
-# 把模型预测的洪水区域和真实洪水区域进行比较，然后计算 IoU、F1、Precision、Recall、Accuracy。
+# 比较预测与真实标签，计算洪水 IoU、两类 mIoU、F1、Precision、Recall、Accuracy。
 from __future__ import annotations
 
 import torch
@@ -29,12 +29,16 @@ class BinarySegmentationMetrics:
     def compute(self) -> dict[str, float]:
         eps = 1e-9
         iou = self.tp / (self.tp + self.fp + self.fn + eps)
+        background_iou = self.tn / (self.tn + self.fp + self.fn + eps)
+        # 累计所有有效像素后，对洪水与非洪水两类取平均；并集为空的类计为 0。
+        miou = (iou + background_iou) / 2
         precision = self.tp / (self.tp + self.fp + eps)
         recall = self.tp / (self.tp + self.fn + eps)
         f1 = 2 * precision * recall / (precision + recall + eps)
         accuracy = (self.tp + self.tn) / (self.tp + self.fp + self.fn + self.tn + eps)
         return {
             "iou": iou,
+            "miou": miou,
             "f1": f1,
             "precision": precision,
             "recall": recall,

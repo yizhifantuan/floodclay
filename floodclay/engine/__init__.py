@@ -6,5 +6,6 @@
 from .checkpoint import load_checkpoint, read_checkpoint, save_checkpoint
 from .device import move_to_device, seed_everything
 from .epoch import run_epoch
+from .scheduler import build_lr_scheduler
 
-__all__ = ["load_checkpoint", "read_checkpoint", "save_checkpoint", "move_to_device", "seed_everything", "run_epoch"]
+__all__ = ["load_checkpoint", "read_checkpoint", "save_checkpoint", "move_to_device", "seed_everything", "run_epoch", "build_lr_scheduler"]

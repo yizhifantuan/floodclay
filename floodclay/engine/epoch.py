@@ -21,6 +21,7 @@ def run_epoch(
     *,
     optimizer: torch.optim.Optimizer | None = None,
     gradient_clip: float = 1.0,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
 ) -> tuple[dict[str, float], dict[str, float]]:
     """有优化器时训练，否则验证；禁用的 scaler 执行普通精度更新。"""
     training = optimizer is not None
@@ -49,8 +50,12 @@ def run_epoch(
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip)
+            previous_scale = scaler.get_scale() if scheduler is not None and scaler.is_enabled() else None
             scaler.step(optimizer)
             scaler.update()
+            # AMP 溢出时跳过参数更新并降低 scale，此时调度器也不推进。
+            if scheduler is not None and (previous_scale is None or scaler.get_scale() >= previous_scale):
+                scheduler.step()
 
         batch_size = batch["target"].shape[0]
         samples += batch_size

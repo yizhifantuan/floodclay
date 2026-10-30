@@ -303,9 +303,8 @@ class SharedClayEncoder(nn.Module):
             if modality == "ps" and self.ps_encoder_size is not None:
                 height, width = pixels.shape[-2:]
                 target = self.ps_encoder_size
-                if height != width:
-                    raise ValueError("PS 缩放为方形输入时，原图必须为方形以保持单一 GSD")
                 if (height, width) != (target, target):
+                    # 双线性插值
                     pixels = F.interpolate(
                         pixels, size=(target, target), mode="bilinear",
                         align_corners=False, antialias=True,

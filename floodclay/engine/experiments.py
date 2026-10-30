@@ -23,15 +23,20 @@ def create_experiment_dir(output_root: str | Path) -> Path:
 
 def latest_best_checkpoint(output_root: str | Path) -> Path:
     root = Path(output_root)
-    # 新实验直接位于 runs/run_*，同时兼容此前 runs/default/run_* 的实验。
+    # 默认读取 runs/result/run_*，同时兼容此前 runs 下的权重。
+    roots = [root, root / "default"]
+    if root.name == "result":
+        roots.extend((root.parent, root.parent / "default"))
+    else:
+        roots.append(root / "result")
     candidates = [
-        path for parent in (root, root / "default")
+        path for parent in roots
         for path in parent.glob("run_*/best.pt") if path.is_file()
     ]
     if candidates:
         return max(candidates, key=lambda path: path.parent.name)
     # 兼容此前 output_dir/best.pt 以及 runs/default/best.pt 的权重。
-    for legacy in (root / "best.pt", root / "default" / "best.pt"):
+    for legacy in (parent / "best.pt" for parent in roots):
         if legacy.is_file():
             return legacy
     raise FileNotFoundError(f"未找到实验的 best.pt，请先训练或指定检查点路径：{root}")

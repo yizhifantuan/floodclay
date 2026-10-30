@@ -4,6 +4,7 @@ torch>=2.4
 torchvision>=0.19
 einops~=0.7.0
 timm>=0.9.16
+matplotlib>=3.7
 
 # Clay v1.5 source is bundled in ./claymodel; no separate claymodel install is needed.
 # Original package metadata and provenance are kept in claymodel/UPSTREAM_METADATA.txt.
