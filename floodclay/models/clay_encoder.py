@@ -227,8 +227,17 @@ class SharedClayEncoder(nn.Module):
         # 读取 Clay 编码器输出的特征维度，并保存下来
         self.output_dim = self.backbone.dim
         self.depth = len(self.backbone.encoder.transformer.layers)
-        # 每个 Block 后都有一个独立的 MixtureAdapter；Clay-Large 共 24 个。
-        self.adapter_layers = tuple(range(1, self.depth + 1))
+        # 按配置选择插入层；旧检查点未配置时仍在每个 Block 后插入。
+        adapter_layers = model_config.get("adapter_layers", list(range(1, self.depth + 1)))
+        if (
+            not isinstance(adapter_layers, (list, tuple))
+            or not adapter_layers
+            or any(isinstance(layer, bool) or not isinstance(layer, int)
+                   or not 1 <= layer <= self.depth for layer in adapter_layers)
+            or list(adapter_layers) != sorted(set(adapter_layers))
+        ):
+            raise ValueError(f"adapter_layers 必须是 1 到 {self.depth} 内严格递增的非空整数列表")
+        self.adapter_layers = tuple(adapter_layers)
         # Adapter 的瓶颈维度
         bottleneck_dim = int(model_config.get("adapter_bottleneck_dim"))
         # 设置 Adapter 使用的网格大小
@@ -318,7 +327,7 @@ class SharedClayEncoder(nn.Module):
             )
 
         shared = None
-        # 层级同步：三路都执行当前 Block 后，才进入同一个 Mixture Adapter。
+        # 层级同步：三路都执行当前 Block 后，仅在配置的插入层执行 Mixture Adapter。
         # 当前 large 模型有 24 层，所以 index 从 0 到 23
         for index in range(self.depth):
             for modality in self.modalities:
@@ -326,6 +335,8 @@ class SharedClayEncoder(nn.Module):
                 tokens[modality] = self.backbone.forward_block(tokens[modality], index)
             # 把当前 Transformer Block 的索引 index 加 1，然后转换成字符串，保存到变量 layer 中
             layer = str(index + 1)
+            if layer not in self.adapters:
+                continue
             # 将每种模态的 token 转成二维特征图
             maps = {name: self.backbone.to_feature_map(value, grids[name]) for name, value in tokens.items()}
             # 每个插入点独立处理三路特征，不再传入上一层共享表示。

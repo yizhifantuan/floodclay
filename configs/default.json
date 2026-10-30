@@ -59,6 +59,7 @@
     "freeze_clay": true,
     "unfreeze_clay_last_blocks": 3,
     "patch_size": 8,
+    "adapter_layers": [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24],
     "adapter_bottleneck_dim": 32,
     "adapter_gate_hidden_dim": 16,
     "adapter_residual_scale": 0.1,
